@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Attendance Cleaner</title>
+<style>
+:root{box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px);
+--bg:#f6f7fa;--card:#fff;--tx:#1d2433;--mu:#667085;--bd:#d9dee8;--ac:#305496;--ac-tx:#fff;
+--rest:#fce4d6;--work:#c6e0b4;--abs:#ffc7ce;--warn:#ffeb9c;--night:#bdd7ee}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#14171d;--card:#1d222b;--tx:#e8ebf2;--mu:#98a2b3;--bd:#323a49;--ac:#6f93d6;--ac-tx:#0b1020;
+--rest:#5a3a2a;--work:#35502b;--abs:#5e2b33;--warn:#5c5320;--night:#2c4a66}}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+body{margin:0;background:var(--bg);color:var(--tx);font:15px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif}
+main{max-width:1100px;margin:0 auto;padding:20px 16px 40px}
+h1{font-size:22px;margin:0 0 4px}p.sub{color:var(--mu);margin:0 0 18px}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:12px;padding:16px;margin-bottom:16px}
+#drop{border:2px dashed var(--bd);border-radius:12px;padding:28px;text-align:center;cursor:pointer}
+#drop.on{border-color:var(--ac)}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px}
+label{display:block;font-size:12px;color:var(--mu);margin-bottom:3px}
+input[type=date],input[type=number]{width:100%;box-sizing:border-box;padding:7px 8px;border:1px solid var(--bd);border-radius:8px;background:var(--bg);color:var(--tx);font:inherit}
+button{background:var(--ac);color:var(--ac-tx);border:0;border-radius:8px;padding:9px 16px;font:inherit;font-weight:600;cursor:pointer}
+button:disabled{opacity:.45;cursor:default}
+.row{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:14px}
+#msg{color:var(--mu);font-size:14px}.err{color:#d92d20!important}
+.wrap{overflow-x:auto;border:1px solid var(--bd);border-radius:8px;max-height:560px}
+table{border-collapse:collapse;font-size:12.5px;white-space:nowrap;width:100%}
+th{position:sticky;top:0;background:#305496;color:#fff;padding:6px 8px;text-align:left}
+td{padding:4px 8px;border-top:1px solid var(--bd)}
+.s-Rest{background:var(--rest)}.s-Work{background:var(--work)}.s-Abs{background:var(--abs)}.y{background:var(--warn)}.n{background:var(--night)}.f{background:var(--rest)}
+</style>
+</head>
+<body>
+<main>
+<h1>Attendance Cleaner</h1>
+<p class="sub">For ZKTECO extracted attendance ONLY.</p>
+
+<div class="card">
+  <div id="drop">Click or drag excel files here.<br><small style="color:var(--mu)">Click or drop an extracted .xls / .xlsx file here from ZKTECO</small></div>
+  <input id="file" type="file" accept=".xls,.xlsx,.csv" hidden>
+  <div id="fname" style="margin-top:8px;color:var(--mu)"></div>
+</div>
+
+<div class="card">
+  <div class="grid">
+    <div><label>Period Start</label><input type="date" id="ps"></div>
+    <div><label>Period End</label><input type="date" id="pe"></div>
+    <div><label>Break deducted (hrs)</label><input type="number" id="brk" value="1" step="0.25"></div>
+    <div><label>Deduct break if pair ≥ (hrs)</label><input type="number" id="brkmin" value="5" step="0.25"></div>
+    <div><label>Max In→Out gap (hrs)</label><input type="number" id="gap" value="24"></div>
+    <div><label>Duplicate-tap window (min)</label><input type="number" id="win" value="120"></div>
+    <div><label>Long-shift flag over (hrs)</label><input type="number" id="long" value="14"></div>
+  </div>
+  <div class="row"><button id="go" disabled>Clean it</button><button id="dl" disabled>Download Clean.xlsx</button><span id="msg"></span></div>
+</div>
+
+<div class="card" id="out" hidden>
+  <div id="sum" style="margin-bottom:10px"></div>
+  <div class="wrap"><table id="tbl"></table></div>
+</div>
+</main>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js"></script>
+<script>
+const $=id=>document.getElementById(id);
+let RAW=[],MASTER=[],RESULT=[],srcName='';
+
+// ---------- reading ----------
+const cv=c=>{let v=c&&c.value;if(v&&typeof v==='object'&&!(v instanceof Date)){if('result' in v)v=v.result;else if(v.richText)v=v.richText.map(t=>t.text).join('');else if(v.text)v=v.text}return v==null?'':v};
+function toSerial(v){
+  if(v instanceof Date)return v.getTime()/864e5+25569;
+  if(typeof v==='number')return v;
+  if(typeof v!=='string')return null;
+  const m=v.trim().match(/^(\d{1,4})[\/-](\d{1,2})[\/-](\d{1,4})[ T]+(\d{1,2}):(\d{2})(?::(\d{2}))?\s*([AaPp][Mm])?$/);
+  if(!m)return null;
+  let y,mo,d;
+  if(m[1].length===4){y=+m[1];mo=+m[2];d=+m[3]}else{mo=+m[1];d=+m[2];y=+m[3];if(y<100)y+=2000}
+  let h=+m[4];const ap=m[7]&&m[7].toLowerCase();
+  if(ap==='pm'&&h<12)h+=12;if(ap==='am'&&h===12)h=0;
+  return Date.UTC(y,mo-1,d)/864e5+25569+(h*3600+ +m[5]*60+(+m[6]||0))/86400;
+}
+const serialToISO=s=>new Date((s-25569)*864e5).toISOString().slice(0,10);
+const isoToSerial=s=>Date.parse(s+'T00:00:00Z')/864e5+25569;
+
+async function loadFile(f){
+  $('msg').textContent='Reading…';$('msg').className='';
+  try{
+    const wb=XLSX.read(await f.arrayBuffer(),{type:'array'});
+    const grid=n=>XLSX.utils.sheet_to_json(wb.Sheets[n],{header:1,raw:true,defval:''});
+    const name=wb.SheetNames.find(n=>n==='RawData')||wb.SheetNames.find(n=>/ac-?no/i.test(String((grid(n)[0]||[])[0])))||wb.SheetNames[0];
+    const g=grid(name);
+    const hdr={};(g[0]||[]).forEach((c,i)=>{hdr[String(c).trim().toLowerCase()]=i});
+    const find=(re,d)=>{for(const k in hdr)if(re.test(k))return hdr[k];return d};
+    const cA=find(/^ac-?no/,0),cN=find(/^name$/,1),cT=find(/^time$/,2),cS=find(/^state$/,3),cE=find(/^exception$/,4);
+    const mi=find(/^master id/,-1),mn=find(/^employee name/,-1),mr=find(/^rest day/,-1);
+    RAW=[];MASTER=[];
+    for(let r=1;r<g.length;r++){
+      const row=g[r],id=String(row[cA]??'').trim();
+      if(id!=='')RAW.push({id,name:String(row[cN]??'').trim(),ser:toSerial(row[cT]),state:String(row[cS]??''),exc:String(row[cE]??'')});
+      if(mi>=0){const m=String(row[mi]??'').trim();if(m!=='')MASTER.push({id:m,name:mn>=0?String(row[mn]??'').trim():'',rest:mr>=0?String(row[mr]??'').trim():''})}
+    }
+    const days=RAW.filter(x=>x.ser!=null).map(x=>Math.floor(x.ser));
+    if(!days.length)throw new Error('No readable Time values found (expected e.g. 11/3/2026 7:56 AM).');
+    $('ps').value=serialToISO(Math.min(...days));$('pe').value=serialToISO(Math.max(...days));
+    const bad=RAW.filter(x=>x.ser==null).length;
+    $('fname').textContent=`${f.name} — ${RAW.length} punch rows, ${MASTER.length} in master list${bad?`, ${bad} rows with unreadable Time`:''}. Period auto-set to the data range; adjust if needed.`;
+    srcName=f.name;$('go').disabled=false;$('msg').textContent='';
+  }catch(e){$('msg').textContent=e.message;$('msg').className='err'}
+}
+
+// ---------- core (mirrors RawData helper columns + Clean formulas) ----------
+function runClean(){
+  const P={brk:+$('brk').value,brkmin:+$('brkmin').value,gap:+$('gap').value*60,win:+$('win').value,long:+$('long').value};
+  const start=Math.floor(isoToSerial($('ps').value)),end=Math.floor(isoToSerial($('pe').value));
+  const nDays=Math.max(1,end-start+1);
+  // group by id
+  const byId=new Map();
+  for(const r of RAW){if(!byId.has(r.id))byId.set(r.id,[]);byId.get(r.id).push(r)}
+  const recs=new Map();   // "id|day|rank" -> record
+  for(const [id,rows] of byId){
+    // state + minute; duplicates at same minute -> last row wins
+    const ev=new Map();
+    for(const r of rows){if(r.ser==null)continue;const s=/out/i.test(r.state)?'O':/in/i.test(r.state)?'I':'';if(!s)continue;ev.set(Math.round(r.ser*1440),{m:Math.round(r.ser*1440),st:s,exc:r.exc})}
+    const e=[...ev.values()].sort((a,b)=>a.m-b.m);
+    // blocks: same state, each tap within window of the previous tap
+    const bl=[];
+    e.forEach((x,i)=>{const p=e[i-1];if(!p||p.st!==x.st||x.m-p.m>P.win)bl.push({st:x.st,first:x,last:x});else bl[bl.length-1].last=x});
+    // records
+    const list=[];
+    bl.forEach((b,i)=>{
+      const nx=bl[i+1],pv=bl[i-1];
+      if(b.st==='I'){
+        const paired=nx&&nx.st==='O'&&nx.last.m-b.first.m<=P.gap;
+        list.push({inM:b.first.m,outM:paired?nx.last.m:null,inE:b.first.exc,outE:paired?nx.last.exc:'',day:Math.floor(b.first.m/1440),sort:b.first.m});
+      }else{
+        const paired=pv&&pv.st==='I'&&b.last.m-pv.first.m<=P.gap;
+        if(!paired)list.push({inM:null,outM:b.last.m,inE:'',outE:b.last.exc,day:Math.floor(b.last.m/1440),sort:b.last.m});
+      }
+    });
+    list.sort((a,b)=>a.sort-b.sort);
+    const cnt={};
+    for(const r of list){cnt[r.day]=(cnt[r.day]||0)+1;recs.set(id+'|'+r.day+'|'+cnt[r.day],r)}
+  }
+  // employee order: master first, then new IDs by first appearance
+  const emps=MASTER.map(m=>({id:m.id,mname:m.name,rest:m.rest}));
+  const seen=new Set(emps.map(e=>e.id));
+  for(const r of RAW)if(!seen.has(r.id)){seen.add(r.id);emps.push({id:r.id,mname:'',rest:''})}
+  const hrs=(i,o)=>{const h=(o-i)/60;return Math.round((h-(h>=P.brkmin?P.brk:0))*100)/100};
+  const out=[];
+  for(const e of emps){
+    const first=byId.get(e.id);
+    const name=(first&&first[0].name)||e.mname||'(walang pangalan)';
+    const rest=(e.rest||'7').replace(/\s/g,'');
+    for(let d=0;d<nDays;d++){
+      const day=start+d;
+      const wd=new Date((day-25569)*864e5).getUTCDay()||7;
+      const isRest=(','+rest+',').includes(','+wd+',');
+      const r1=recs.get(e.id+'|'+day+'|1'),r2=recs.get(e.id+'|'+day+'|2'),r3=recs.get(e.id+'|'+day+'|3');
+      const t=m=>m==null?'':(((m%1440)+1440)%1440)/1440;
+      const rem=(r,isIn)=>{if(!r)return'';if(isIn)return r.inM==null?(r.outM!=null?'No In':''):r.inE;return r.outM==null?(r.inM!=null?'No Out':''):r.outE};
+      const h1=r1&&r1.inM!=null&&r1.outM!=null?hrs(r1.inM,r1.outM):'';
+      const h2=r2&&r2.inM!=null&&r2.outM!=null?hrs(r2.inM,r2.outM):'';
+      const tot=h1===''&&h2===''?'':(+h1||0)+(+h2||0);
+      const next=r=>r&&r.inM!=null&&r.outM!=null&&Math.floor(r.outM/1440)>Math.floor(r.inM/1440);
+      const longS=r=>r&&r.inM!=null&&r.outM!=null&&(r.outM-r.inM)/60>P.long;
+      const flags=((name==='(walang pangalan)'?'Walang pangalan; ':'')+(next(r1)?'#1 Out kinabukasan (night shift); ':'')+(next(r2)?'#2 Out kinabukasan (night shift); ':'')+(longS(r1)||longS(r2)?'Mahabang shift - i-check; ':'')+(r3?'May 3+ pairs - i-check RawData; ':'')).trim();
+      out.push({id:e.id,name,day,dn:['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][wd%7],
+        status:r1?(isRest?'Rest Day - Worked':'Present'):(isRest?'Rest Day':'No Log (Possible Absent)'),
+        in1:r1&&r1.inM!=null?t(r1.inM):'',e1:rem(r1,true),out1:r1&&r1.outM!=null?t(r1.outM):'',e1o:rem(r1,false),h1,
+        in2:r2&&r2.inM!=null?t(r2.inM):'',e2:rem(r2,true),out2:r2&&r2.outM!=null?t(r2.outM):'',e2o:rem(r2,false),h2,tot,flags,n1:next(r1),n2:next(r2)});
+    }
+  }
+  return out;
+}
+
+// ---------- display ----------
+const fmtT=v=>{if(v==='')return'';let m=Math.round(v*1440),h=Math.floor(m/60)%24,mi=m%60;return(h%12||12)+':'+String(mi).padStart(2,'0')+' '+(h<12?'AM':'PM')};
+const fmtD=s=>{const [y,m,d]=serialToISO(s).split('-');return m+'/'+d+'/'+y};
+const HEAD=['AC-No.','Employee Name','Date','Day','Status','C/In','Time In #1','Remarks','C/Out','Time Out #1','Remarks','Hours #1','C/In','Time In #2','Remarks','C/Out','Time Out #2','Remarks','Hours #2','Total Hours','Flags'];
+const sCls=s=>s==='Rest Day'?'s-Rest':s==='Rest Day - Worked'?'s-Work':s.startsWith('No Log')?'s-Abs':'';
+const rem=v=>v==='No In'||v==='No Out'?'y':'';
+function render(){
+  const R=RESULT,cnt=k=>R.filter(r=>r.status===k).length;
+  $('sum').innerHTML=`<b>${new Set(R.map(r=>r.id)).size}</b> employees × <b>${R.length/Math.max(1,new Set(R.map(r=>r.id)).size)}</b> days = <b>${R.length}</b> rows · Present ${cnt('Present')} · Rest Day ${cnt('Rest Day')} · Rest Day - Worked ${cnt('Rest Day - Worked')} · No Log ${R.filter(r=>r.status.startsWith('No Log')).length} · Flagged ${R.filter(r=>r.flags).length}`+(R.length>400?' <span style="color:var(--mu)">(preview shows first 400 rows; download has all)</span>':'');
+  const td=(v,c='')=>`<td class="${c}">${v===''||v==null?'':String(v).replace(/</g,'&lt;')}</td>`;
+  $('tbl').innerHTML='<tr>'+HEAD.map(h=>'<th>'+h+'</th>').join('')+'</tr>'+R.slice(0,400).map(r=>'<tr>'+[td(r.id),td(r.name),td(fmtD(r.day)),td(r.dn),td(r.status,sCls(r.status)),td(r.in1===''?'':'C/In'),td(fmtT(r.in1)),td(r.e1,rem(r.e1)),td(r.out1===''?'':'C/Out'),td(fmtT(r.out1),r.n1?'n':''),td(r.e1o,rem(r.e1o)),td(r.h1),td(r.in2===''?'':'C/In'),td(fmtT(r.in2)),td(r.e2,rem(r.e2)),td(r.out2===''?'':'C/Out'),td(fmtT(r.out2),r.n2?'n':''),td(r.e2o,rem(r.e2o)),td(r.h2),td(r.tot),td(r.flags,r.flags?'f':'')].join('')+'</tr>').join('');
+  $('out').hidden=false;
+}
+
+// ---------- export ----------
+async function buildXlsx(){
+  const wb=new ExcelJS.Workbook(),ws=wb.addWorksheet('Clean');
+  ws.addRow(HEAD);
+  const hr=ws.getRow(1);hr.eachCell(c=>{c.font={bold:true,color:{argb:'FFFFFFFF'}};c.fill={type:'pattern',pattern:'solid',fgColor:{argb:'FF305496'}}});
+  const fill=a=>({type:'pattern',pattern:'solid',fgColor:{argb:a}});
+  for(const r of RESULT){
+    const row=ws.addRow([r.id,r.name,new Date((r.day-25569)*864e5),r.dn,r.status,r.in1===''?'':'C/In',r.in1,r.e1,r.out1===''?'':'C/Out',r.out1,r.e1o,r.h1,r.in2===''?'':'C/In',r.in2,r.e2,r.out2===''?'':'C/Out',r.out2,r.e2o,r.h2,r.tot,r.flags]);
+    const sc={'Rest Day':'FFFCE4D6','Rest Day - Worked':'FFC6E0B4'}[r.status]||(r.status.startsWith('No Log')?'FFFFC7CE':null);
+    if(sc)row.getCell(5).fill=fill(sc);
+    [[8,r.e1],[11,r.e1o],[15,r.e2],[18,r.e2o]].forEach(([c,v])=>{if(v==='No In'||v==='No Out')row.getCell(c).fill=fill('FFFFEB9C')});
+    if(r.n1)row.getCell(10).fill=fill('FFBDD7EE');if(r.n2)row.getCell(17).fill=fill('FFBDD7EE');
+    if(r.flags)row.getCell(21).fill=fill('FFFCE4D6');
+  }
+  ws.getColumn(3).numFmt='mm/dd/yyyy';
+  [7,10,14,17].forEach(c=>ws.getColumn(c).numFmt='h:mm AM/PM');
+  [12,19,20].forEach(c=>ws.getColumn(c).numFmt='0.00');
+  [10,24,12,7,24,7,11,10,7,11,10,11,7,11,10,7,11,10,11,11,36].forEach((w,i)=>ws.getColumn(i+1).width=w);
+  ws.views=[{state:'frozen',ySplit:1}];ws.autoFilter={from:'A1',to:'U1'};
+  return new Blob([await wb.xlsx.writeBuffer()],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
+}
+
+// ---------- wiring ----------
+const drop=$('drop'),fi=$('file');
+drop.onclick=()=>fi.click();
+fi.onchange=()=>fi.files[0]&&loadFile(fi.files[0]);
+['dragover','dragenter'].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.classList.add('on')}));
+['dragleave','drop'].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.classList.remove('on')}));
+drop.addEventListener('drop',e=>e.dataTransfer.files[0]&&loadFile(e.dataTransfer.files[0]));
+$('go').onclick=()=>{
+  try{
+    if(!$('ps').value||!$('pe').value)throw new Error('Set the period start and end.');
+    if(isoToSerial($('pe').value)<isoToSerial($('ps').value))throw new Error('Period End is before Period Start.');
+    RESULT=runClean();render();$('dl').disabled=false;$('msg').textContent='Done.';$('msg').className='';
+  }catch(e){$('msg').textContent=e.message;$('msg').className='err'}
+};
+$('dl').onclick=async()=>{
+  try{
+    const blob=await buildXlsx();
+    const a=document.createElement('a');
+    a.href=URL.createObjectURL(blob);
+    a.download=(srcName.replace(/\.(xlsx|xls|csv)$/i,'')||'attendance')+'_clean.xlsx';
+    document.body.appendChild(a);a.click();a.remove();
+    setTimeout(()=>URL.revokeObjectURL(a.href),5000);
+  }catch(e){$('msg').textContent='Could not save: '+e.message;$('msg').className='err'}
+};
+</script>
+</body>
+</html>
