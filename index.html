@@ -104,8 +104,6 @@ async function loadFile(f){
     const days=RAW.filter(x=>x.ser!=null).map(x=>Math.floor(x.ser));
     if(!days.length)throw new Error('No readable Time values found (expected e.g. 11/3/2026 7:56 AM).');
     $('ps').value=serialToISO(Math.min(...days));$('pe').value=serialToISO(Math.max(...days));
-    const bad=RAW.filter(x=>x.ser==null).length;
-    $('fname').textContent=`${f.name} — ${RAW.length} punch rows, ${MASTER.length} in master list${bad?`, ${bad} rows with unreadable Time`:''}. Period auto-set to the data range; adjust if needed.`;
     srcName=f.name;$('go').disabled=false;$('msg').textContent='';
   }catch(e){$('msg').textContent=e.message;$('msg').className='err'}
 }
